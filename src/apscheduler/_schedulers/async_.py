@@ -192,6 +192,31 @@ class AsyncScheduler:
     def __repr__(self) -> str:
         return create_repr(self, "identity", "role", "data_store", "event_broker")
 
+    def _extract_exception_group_causes(
+        self, exc: BaseException
+    ) -> list[BaseException]:
+        """
+        Recursively extract all exceptions from an ExceptionGroup.
+
+        This helps identify root causes when exceptions are nested inside
+        ExceptionGroups (e.g., from AnyIO TaskGroups).
+
+        :param exc: The exception to extract causes from
+        :return: A list of all nested exceptions, flattened
+        """
+        causes: list[BaseException] = []
+
+        # Check if this is an ExceptionGroup (Python 3.11+) or BaseExceptionGroup (AnyIO)
+        if hasattr(exc, "exceptions"):
+            # This is an ExceptionGroup - recursively extract all nested exceptions
+            for nested_exc in exc.exceptions:
+                causes.extend(self._extract_exception_group_causes(nested_exc))
+        else:
+            # This is a regular exception - add it to the list
+            causes.append(exc)
+
+        return causes
+
     async def _ensure_services_initialized(self, exit_stack: AsyncExitStack) -> None:
         """
         Initialize the data store and event broker if this hasn't already been done.
@@ -904,6 +929,22 @@ class AsyncScheduler:
                     await self.event_broker.publish_local(SchedulerStarted())
             except BaseException as exc:
                 exception = exc
+                # Extract root causes from ExceptionGroups for better error reporting
+                root_causes = self._extract_exception_group_causes(exc)
+                if root_causes:
+                    self.logger.error(
+                        "Scheduler crashed with %d nested exception(s):",
+                        len(root_causes),
+                        exc_info=False,
+                    )
+                    for i, cause in enumerate(root_causes, 1):
+                        self.logger.error(
+                            "Exception %d/%d: %s",
+                            i,
+                            len(root_causes),
+                            cause,
+                            exc_info=cause,
+                        )
                 raise
             finally:
                 self._state = RunState.stopped
@@ -911,7 +952,22 @@ class AsyncScheduler:
                 if not exception or isinstance(exception, get_cancelled_exc_class()):
                     self.logger.info("Scheduler stopped")
                 elif isinstance(exception, Exception):
-                    self.logger.exception("Scheduler crashed")
+                    # Log exception with full context, including nested exceptions
+                    root_causes = self._extract_exception_group_causes(exception)
+                    if root_causes and len(root_causes) > 1:
+                        self.logger.error(
+                            "Scheduler crashed with multiple exceptions (showing first):",
+                            exc_info=root_causes[0],
+                        )
+                        for i, cause in enumerate(root_causes[1:], 2):
+                            self.logger.error(
+                                "Additional exception %d/%d:",
+                                i,
+                                len(root_causes),
+                                exc_info=cause,
+                            )
+                    else:
+                        self.logger.exception("Scheduler crashed")
                 elif exception:
                     self.logger.info(
                         "Scheduler stopped due to %s", exception.__class__.__name__
@@ -1230,4 +1286,6 @@ class AsyncScheduler:
             finally:
                 current_job.reset(token)
         finally:
-            self._running_jobs.remove(job)
+            # Use discard() instead of remove() to avoid KeyError race condition
+            # when multiple cleanup paths try to remove the same job
+            self._running_jobs.discard(job)

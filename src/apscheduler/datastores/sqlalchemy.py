@@ -33,6 +33,7 @@ from sqlalchemy import (
     and_,
     bindparam,
     create_engine,
+    event,
     false,
     or_,
     select,
@@ -184,9 +185,9 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
     def __attrs_post_init__(self) -> None:
         if isinstance(self.engine_or_url, (str, URL)):
             try:
-                self._engine = create_async_engine(self.engine_or_url)
+                self._engine = self._create_async_engine_with_config(self.engine_or_url)
             except InvalidRequestError:
-                self._engine = create_engine(self.engine_or_url)
+                self._engine = self._create_sync_engine_with_config(self.engine_or_url)
 
             self._close_on_exit = True
         else:
@@ -209,19 +210,181 @@ class SQLAlchemyDataStore(BaseExternalDataStore):
     def __repr__(self) -> str:
         return create_repr(self, url=repr(self._engine.url), schema=self.schema)
 
+    def _create_async_engine_with_config(
+        self, url: str | URL
+    ) -> AsyncEngine:
+        """
+        Create an async engine with database-specific optimizations.
+
+        For PostgreSQL: Configures connection pooling with appropriate timeouts.
+        For SQLite: Enables WAL mode and configures pragmas for better concurrency.
+        """
+        # Parse URL to determine database type
+        if isinstance(url, str):
+            from sqlalchemy.engine import make_url
+            parsed_url = make_url(url)
+        else:
+            parsed_url = url
+
+        dialect_name = parsed_url.get_dialect().name
+        connect_args: dict[str, Any] = {}
+
+        # Configure SQLite-specific settings
+        if dialect_name == "sqlite":
+            # Enable WAL mode for better concurrency
+            # Set busy timeout to handle locked database scenarios
+            # Use NORMAL synchronous mode for balance between safety and performance
+            from sqlalchemy.pool import NullPool
+
+            connect_args = {
+                "timeout": 60.0,  # 60 second busy timeout
+            }
+            engine = create_async_engine(
+                url,
+                connect_args=connect_args,
+                poolclass=NullPool,  # Use NullPool for SQLite (no connection pooling)
+            )
+            # Set SQLite pragmas via event listener on the sync engine
+            # For aiosqlite, this will be called when connections are created
+            @event.listens_for(engine.sync_engine, "connect")
+            def set_sqlite_pragmas(dbapi_conn, connection_record):
+                """Configure SQLite pragmas for optimal performance and stability."""
+                cursor = dbapi_conn.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA busy_timeout=60000")  # 60 seconds in milliseconds
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                    cursor.execute("PRAGMA temp_store=MEMORY")
+                finally:
+                    cursor.close()
+
+            return engine
+
+        # Configure PostgreSQL-specific settings
+        elif dialect_name == "postgresql":
+            # Determine if using asyncpg (for command_timeout)
+            driver = parsed_url.get_driver()
+            engine_kwargs: dict[str, Any] = {
+                "pool_size": 10,  # Base pool size
+                "max_overflow": 20,  # Additional connections beyond pool_size
+                "pool_recycle": 3600,  # Recycle connections after 1 hour
+                "pool_pre_ping": True,  # Validate connections before use
+                "pool_timeout": 30,  # Timeout for acquiring connection from pool
+            }
+
+            # asyncpg-specific timeout configuration
+            if driver == "asyncpg":
+                connect_args["command_timeout"] = 60  # Query execution timeout
+
+            return create_async_engine(url, connect_args=connect_args, **engine_kwargs)
+
+        # Default configuration for other databases
+        return create_async_engine(
+            url,
+            pool_pre_ping=True,  # Validate connections before use
+            pool_timeout=30,
+        )
+
+    def _create_sync_engine_with_config(self, url: str | URL) -> Engine:
+        """
+        Create a sync engine with database-specific optimizations.
+        """
+        # Parse URL to determine database type
+        if isinstance(url, str):
+            from sqlalchemy.engine import make_url
+            parsed_url = make_url(url)
+        else:
+            parsed_url = url
+
+        dialect_name = parsed_url.get_dialect().name
+        connect_args: dict[str, Any] = {}
+
+        # Configure SQLite-specific settings
+        if dialect_name == "sqlite":
+            from sqlalchemy.pool import NullPool
+
+            connect_args = {
+                "timeout": 60.0,  # 60 second busy timeout
+            }
+            engine = create_engine(
+                url,
+                connect_args=connect_args,
+                poolclass=NullPool,  # Use NullPool for SQLite
+            )
+            # Set SQLite pragmas via event listener
+            @event.listens_for(engine, "connect")
+            def set_sqlite_pragmas(dbapi_conn, connection_record):
+                """Configure SQLite pragmas for optimal performance and stability."""
+                cursor = dbapi_conn.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                    cursor.execute("PRAGMA busy_timeout=60000")  # 60 seconds in milliseconds
+                    cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                    cursor.execute("PRAGMA temp_store=MEMORY")
+                finally:
+                    cursor.close()
+
+            return engine
+
+        # Configure PostgreSQL-specific settings
+        elif dialect_name == "postgresql":
+            engine_kwargs: dict[str, Any] = {
+                "pool_size": 10,
+                "max_overflow": 20,
+                "pool_recycle": 3600,
+                "pool_pre_ping": True,
+                "pool_timeout": 30,
+            }
+            return create_engine(url, connect_args=connect_args, **engine_kwargs)
+
+        # Default configuration for other databases
+        return create_engine(
+            url,
+            pool_pre_ping=True,
+            pool_timeout=30,
+        )
+
     def _retry(self) -> tenacity.AsyncRetrying:
         def after_attempt(retry_state: tenacity.RetryCallState) -> None:
+            exc = retry_state.outcome.exception()
             self._logger.warning(
-                "Temporary data store error (attempt %d): %s",
+                "Temporary data store error (attempt %d/%d): %s: %s",
                 retry_state.attempt_number,
-                retry_state.outcome.exception(),
+                retry_state.retry_object.stop.max_attempt_number
+                if hasattr(retry_state.retry_object.stop, "max_attempt_number")
+                else "?",
+                type(exc).__name__,
+                exc,
             )
 
+        # Determine which exceptions to retry based on database type
+        retry_exceptions: tuple[type[Exception], ...] = (InterfaceError, OSError)
+
+        # Add SQLite-specific retry exceptions
+        if self._engine.dialect.name == "sqlite":
+            from sqlalchemy.exc import OperationalError
+
+            # Retry on SQLite locked errors and other operational errors
+            retry_exceptions = retry_exceptions + (OperationalError,)
+
+        # Add timeout errors for asyncpg
+        if (
+            self._engine.dialect.name == "postgresql"
+            and hasattr(self._engine.dialect, "driver")
+            and self._engine.dialect.driver == "asyncpg"
+        ):
+            retry_exceptions = retry_exceptions + (TimeoutError,)
+
         # OSError is raised by asyncpg if it can't connect
+        # InterfaceError is raised for connection issues
+        # OperationalError is raised for SQLite locked database
+        # TimeoutError is raised by asyncpg for connection/query timeouts
         return tenacity.AsyncRetrying(
             stop=self.retry_settings.stop,
             wait=self.retry_settings.wait,
-            retry=tenacity.retry_if_exception_type((InterfaceError, OSError)),
+            retry=tenacity.retry_if_exception_type(retry_exceptions),
             after=after_attempt,
             sleep=anyio.sleep,
             reraise=True,
