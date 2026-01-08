@@ -31,6 +31,33 @@ Or install multiple extras at once::
 
     pip install dd-apscheduler[sqlalchemy,redis,cbor]
 
+Usage
+=====
+
+After installation, import the package as ``apscheduler`` (not ``dd_apscheduler``)::
+
+    import apscheduler
+    from apscheduler import AsyncScheduler, Scheduler
+    from apscheduler.datastores.sqlalchemy import SQLAlchemyDataStore
+    from apscheduler.eventbrokers.redis import RedisEventBroker
+
+Example::
+
+    from apscheduler import AsyncScheduler
+    from apscheduler.datastores.memory import MemoryDataStore
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    async def my_task():
+        print("Task executed!")
+
+    async with AsyncScheduler(data_store=MemoryDataStore()) as scheduler:
+        await scheduler.add_schedule(
+            my_task,
+            IntervalTrigger(seconds=5),
+            id="my_schedule"
+        )
+        await scheduler.run_until_stopped()
+
 Description
 ===========
 
