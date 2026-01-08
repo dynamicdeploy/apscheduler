@@ -6,10 +6,10 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "APScheduler"
-description = "In-process task scheduler with Cron-like capabilities"
+name = "dd-apscheduler"
+description = "In-process task scheduler with Cron-like capabilities - Fork with critical stability and database handling fixes"
 readme = "README.rst"
-authors = [{name = "Alex Grönholm", email = "alex.gronholm@nextday.fi"}]
+authors = [{name = "Dynamic Deploy", email = "dynamicdeploy@gmail.com"}]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -33,13 +33,13 @@ dependencies = [
     "tzlocal >= 3.0",
     "typing_extensions >= 4.0; python_version < '3.11'"
 ]
-dynamic = ["version"]
+version = "1.0.0"
 
 [project.urls]
 Documentation = "https://apscheduler.readthedocs.io/en/master/"
 Changelog = "https://apscheduler.readthedocs.io/en/master/versionhistory.html"
-"Source code" = "https://github.com/agronholm/apscheduler"
-"Issue tracker" = "https://github.com/agronholm/apscheduler/issues"
+"Source code" = "https://github.com/dynamicdeploy/apscheduler"
+"Issue tracker" = "https://github.com/dynamicdeploy/apscheduler/issues"
 
 [project.optional-dependencies]
 asyncpg = ["asyncpg >= 0.20"]
@@ -51,7 +51,7 @@ sqlalchemy = ["sqlalchemy[asyncio] >= 2.0.24"]
 
 [dependency-groups]
 test = [
-    "APScheduler[cbor,mongodb,mqtt,redis,sqlalchemy]",
+    "dd-apscheduler[cbor,mongodb,mqtt,redis,sqlalchemy]",
     "asyncpg >= 0.20; python_implementation == 'CPython' and python_version < '3.13'",
     "aiosqlite >= 0.19",
     "anyio[trio]",
@@ -77,9 +77,10 @@ doc = [
     "sphinx-tabs >= 3.3.1",
 ]
 
-[tool.setuptools_scm]
-version_scheme = "post-release"
-local_scheme = "dirty-tag"
+# Version is now fixed in [project] section above
+# [tool.setuptools_scm]
+# version_scheme = "post-release"
+# local_scheme = "dirty-tag"
 
 [tool.pytest.ini_options]
 addopts = "-rsx --tb=short"

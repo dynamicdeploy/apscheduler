@@ -8,9 +8,31 @@
   :target: https://apscheduler.readthedocs.io/en/master/?badge=latest
   :alt: Documentation
 
-.. warning:: The v4.0 series is provided as a **pre-release** and may change in a
-   backwards incompatible fashion without any migration pathway, so do NOT use this
-   release in production!
+dd-apscheduler is a stable fork of APScheduler with critical bug fixes for production use,
+including race condition fixes, improved database connection handling, and enhanced error recovery.
+
+Installation
+============
+
+Install from PyPI using pip::
+
+    pip install dd-apscheduler
+
+For optional dependencies (database backends, serializers, etc.)::
+
+    pip install dd-apscheduler[sqlalchemy]      # For PostgreSQL, MySQL, SQLite support
+    pip install dd-apscheduler[mongodb]         # For MongoDB support
+    pip install dd-apscheduler[redis]           # For Redis event broker
+    pip install dd-apscheduler[mqtt]            # For MQTT event broker
+    pip install dd-apscheduler[cbor]            # For CBOR serializer
+    pip install dd-apscheduler[asyncpg]         # For asyncpg PostgreSQL driver
+
+Or install multiple extras at once::
+
+    pip install dd-apscheduler[sqlalchemy,redis,cbor]
+
+Description
+===========
 
 Advanced Python Scheduler (APScheduler) is a task scheduler and task queue system for
 Python. It can be used solely as a job queuing system if you have no need for task
@@ -76,12 +98,12 @@ Documentation can be found
 Source
 ======
 
-The source can be browsed at `Github <https://github.com/agronholm/apscheduler>`_.
+The source can be browsed at `Github <https://github.com/dynamicdeploy/apscheduler>`_.
 
 Reporting bugs
 ==============
 
-A `bug tracker <https://github.com/agronholm/apscheduler/issues>`_ is provided by
+A `bug tracker <https://github.com/dynamicdeploy/apscheduler/issues>`_ is provided by
 GitHub.
 
 Getting help
